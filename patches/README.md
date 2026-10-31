@@ -6,6 +6,25 @@ versions gpui-kit 0.8 pins (`gpui-pre` / `gpui-pre-wgpu` 0.3.9) by
 gpui-kit contains them, delete this directory, the script, and the
 `[patch.crates-io]` section in `Cargo.toml`.
 
+## Using vec-map-kit from an application
+
+vec-map-kit does not build against unpatched GPUI. `[patch]` sections
+only apply to the workspace that declares them, so an application needs
+its own copy:
+
+```toml
+[patch.crates-io]
+gpui-pre = { path = "path/to/vendor/gpui-pre" }
+gpui-pre-wgpu = { path = "path/to/vendor/gpui-pre-wgpu" }
+```
+
+with the crates materialised by running this repository's
+`script/vendor-gpui.sh` (it writes to `vendor/` next to it). Each patch
+exports a `VEC_MAP_KIT_PATCH_*` marker constant that `src/lib.rs` refers
+to, so a GPUI missing any patch fails with "cannot find value
+`VEC_MAP_KIT_PATCH_...`" instead of building a map that has no labels or
+runs three times slower.
+
 ## Why
 
 A vector map draws every fill and stroke as GPUI path triangles, and

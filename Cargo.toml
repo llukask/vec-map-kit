@@ -21,13 +21,20 @@ libc = "0.2.191"
 prost = "0.14.3"
 walkdir = "2"
 
-# GPUI path-pipeline fixes that make dense vector maps affordable (about
-# 4x less main-thread time per frame over central Vienna). The patched
-# crates are materialised into `vendor/` by `script/vendor-gpui.sh`, which
-# the dev shell runs on entry. See `patches/README.md`.
+# GPUI's Linux renderer, a dependency only so `lib.rs` can check that the
+# compact-path-vertices patch is applied (see `patches/README.md`).
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui-pre-wgpu = "0.3.9"
+
+# GPUI patches this crate requires: the rotated-glyph call labels use, and
+# path-pipeline fixes that make dense vector maps affordable (about 4x less
+# main-thread time per frame over central Vienna). The patched crates are
+# materialised into `vendor/` by `script/vendor-gpui.sh`, which the dev
+# shell runs on entry. See `patches/README.md`.
 #
 # `[patch]` only applies to this workspace: applications embedding
-# `MapView` need the same section in their own Cargo.toml to benefit.
+# `MapView` need the same section in their own Cargo.toml, or the build
+# fails at the patch check in `lib.rs`.
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }

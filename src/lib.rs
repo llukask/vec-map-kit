@@ -22,3 +22,18 @@ pub use source::TileJsonSource;
 pub use style::Style;
 pub use tile::TileId;
 pub use view::{FrameStats, MapView};
+
+// ==============================================================================
+// GPUI patch check
+// ==============================================================================
+//
+// vec-map-kit only builds against GPUI with the patches in `patches/`: one
+// adds the rotated-glyph call labels are drawn with, the other two make
+// dense maps affordable. Each patch exports a marker constant, so a GPUI
+// missing any of them stops the build on the line naming that patch, and
+// the line itself says where the fix is.
+
+const _: () = gpui_kit::VEC_MAP_KIT_PATCH_GLYPH_INSTANCES; // GPUI lacks vec-map-kit's patches, see its patches/README.md
+const _: () = gpui_kit::VEC_MAP_KIT_PATCH_PATHS_INTO_SCENE; // GPUI lacks vec-map-kit's patches, see its patches/README.md
+#[cfg(target_os = "linux")]
+const _: () = gpui_wgpu::VEC_MAP_KIT_PATCH_COMPACT_PATH_VERTICES; // GPUI lacks vec-map-kit's patches, see its patches/README.md

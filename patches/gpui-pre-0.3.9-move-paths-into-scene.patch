@@ -1,6 +1,5 @@
-diff -ruN a/src/scene.rs gpui-pre/src/scene.rs
---- a/src/scene.rs	2006-07-24 03:21:28.000000000 +0200
-+++ b/src/scene.rs	2026-10-31 12:30:03.196272773 +0100
+--- a/src/scene.rs
++++ b/src/scene.rs
 @@ -45,6 +45,9 @@
      pub shadows: Vec<Shadow>,
      pub quads: Vec<Quad>,
@@ -72,7 +71,7 @@ diff -ruN a/src/scene.rs gpui-pre/src/scene.rs
          self.underlines.sort_by_key(|underline| underline.order);
          self.monochrome_sprites
              .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
-@@ -213,6 +232,7 @@
+@@ -213,10 +232,15 @@
  
  pub(crate) enum PaintOperation {
      Primitive(Primitive),
@@ -80,7 +79,15 @@ diff -ruN a/src/scene.rs gpui-pre/src/scene.rs
      StartLayer(Bounds<ScaledPixels>),
      EndLayer,
  }
-@@ -817,6 +837,22 @@
+ 
++/// Present when the vec-map-kit move-paths-into-scene patch is applied;
++/// vec-map-kit refers to it so an unpatched GPUI fails its build.
++pub const VEC_MAP_KIT_PATCH_PATHS_INTO_SCENE: () = ();
++
+ #[derive(Clone)]
+ #[expect(missing_docs)]
+ pub enum Primitive {
+@@ -817,6 +841,22 @@
          }
      }
  
@@ -103,9 +110,8 @@ diff -ruN a/src/scene.rs gpui-pre/src/scene.rs
      /// Scale this path by the given factor.
      pub fn scale(&self, factor: f32) -> Path<ScaledPixels> {
          Path {
-diff -ruN a/src/window.rs gpui-pre/src/window.rs
---- a/src/window.rs	2006-07-24 03:21:28.000000000 +0200
-+++ b/src/window.rs	2026-10-31 12:28:34.689158576 +0100
+--- a/src/window.rs
++++ b/src/window.rs
 @@ -4763,7 +4763,7 @@
          path.color = color.opacity(opacity);
          self.next_frame

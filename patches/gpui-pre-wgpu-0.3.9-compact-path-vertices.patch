@@ -1,6 +1,5 @@
-diff -ruN a/src/shaders_storage.wgsl gpui-pre-wgpu/src/shaders_storage.wgsl
---- a/src/shaders_storage.wgsl	2006-07-24 03:21:28.000000000 +0200
-+++ b/src/shaders_storage.wgsl	2026-10-31 12:31:58.619353584 +0100
+--- a/src/shaders_storage.wgsl
++++ b/src/shaders_storage.wgsl
 @@ -8,6 +8,7 @@
  @group(1) @binding(0) var<storage, read> b_quads: array<Quad>;
  @group(1) @binding(0) var<storage, read> b_shadows: array<Shadow>;
@@ -20,9 +19,8 @@ diff -ruN a/src/shaders_storage.wgsl gpui-pre-wgpu/src/shaders_storage.wgsl
  fn load_path_sprite(instance_id: u32) -> PathSprite {
      return b_path_sprites[instance_id];
  }
-diff -ruN a/src/shaders.wgsl gpui-pre-wgpu/src/shaders.wgsl
---- a/src/shaders.wgsl	2006-07-24 03:21:28.000000000 +0200
-+++ b/src/shaders.wgsl	2026-10-31 12:31:58.619288744 +0100
+--- a/src/shaders.wgsl
++++ b/src/shaders.wgsl
 @@ -1050,6 +1050,10 @@
  struct PathRasterizationVertex {
      xy_position: vec2<f32>,
@@ -56,9 +54,8 @@ diff -ruN a/src/shaders.wgsl gpui-pre-wgpu/src/shaders.wgsl
  
      var alpha: f32;
      if (length(vec2<f32>(dx.x, dy.x)) < 0.001) {
-diff -ruN a/src/wgpu_renderer.rs gpui-pre-wgpu/src/wgpu_renderer.rs
---- a/src/wgpu_renderer.rs	2006-07-24 03:21:28.000000000 +0200
-+++ b/src/wgpu_renderer.rs	2026-10-31 12:31:58.619165034 +0100
+--- a/src/wgpu_renderer.rs
++++ b/src/wgpu_renderer.rs
 @@ -102,11 +102,24 @@
      bounds: Bounds<ScaledPixels>,
  }
@@ -230,3 +227,13 @@ diff -ruN a/src/wgpu_renderer.rs gpui-pre-wgpu/src/wgpu_renderer.rs
      fn write_instance_binding<T>(
          &mut self,
          label: &str,
+--- a/src/gpui_wgpu.rs
++++ b/src/gpui_wgpu.rs
+@@ -13,3 +13,7 @@
+ ))]
+ pub use wgpu_renderer::WgpuHeadlessRenderer;
+ pub use wgpu_renderer::{GpuContext, WgpuRenderer, WgpuSurfaceConfig};
++
++/// Present when the vec-map-kit compact-path-vertices patch is applied;
++/// vec-map-kit refers to it so an unpatched GPUI fails its build.
++pub const VEC_MAP_KIT_PATCH_COMPACT_PATH_VERTICES: () = ();
