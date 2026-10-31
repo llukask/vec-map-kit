@@ -36,10 +36,12 @@
 - Tile arrivals each `cx.notify()` the view; a burst of arrivals causes
   several full repaints in a row (visible as CPU spikes while zooming
   across a level).
-- No labels, icons, `fill-pattern`, `line-dasharray`, `line-gap-width`,
+- No icons, `fill-pattern`, `line-dasharray`, `line-gap-width`,
   `line-offset`, `fill-outline-color`, `fill-translate`, or
   `fill-extrusion` yet. Road casings in maptiler styles are missing
   because of `line-gap-width`.
+- `MapView` draws no attribution; MapTiler and OpenStreetMap require one,
+  so for now every embedding application has to show it.
 - `style::Color::parse` documents that named CSS colours are unsupported;
   styles using `"white"` etc. would fall back to black.
 - `text-font` in the core is a constant `Vec<String>`, not an expression;
