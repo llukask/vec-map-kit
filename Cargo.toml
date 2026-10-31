@@ -1,0 +1,33 @@
+[package]
+name = "vec-map-kit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flate2 = "1"
+futures = "0.3"
+geo = "0.33.1"
+gpui-kit = "0.8"
+log = "0.4"
+lyon_tessellation = "1.0.20"
+prost = "0.14.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2"
+ureq = "3.5"
+
+[dev-dependencies]
+libc = "0.2.191"
+prost = "0.14.3"
+walkdir = "2"
+
+# GPUI path-pipeline fixes that make dense vector maps affordable (about
+# 4x less main-thread time per frame over central Vienna). The patched
+# crates are materialised into `vendor/` by `script/vendor-gpui.sh`, which
+# the dev shell runs on entry. See `patches/README.md`.
+#
+# `[patch]` only applies to this workspace: applications embedding
+# `MapView` need the same section in their own Cargo.toml to benefit.
+[patch.crates-io]
+gpui-pre = { path = "vendor/gpui-pre" }
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }

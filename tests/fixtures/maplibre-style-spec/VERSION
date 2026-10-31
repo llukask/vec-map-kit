@@ -1,0 +1,4 @@
+# Vendored from https://github.com/maplibre/maplibre-style-spec
+# Refreshed by xtask/vendor_maplibre_fixtures.sh
+ref=v24.8.5
+sha=52a69cae4355d17352640d33e2d0c1328e6acfbe

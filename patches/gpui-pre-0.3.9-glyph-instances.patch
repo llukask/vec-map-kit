@@ -1,0 +1,94 @@
+diff -ruN -x .vendor-stamp gpui-pre-0.3.9/src/window.rs ../../vendor/gpui-pre/src/window.rs
+--- a/src/window.rs	2026-10-31 13:03:05.503977668 +0100
++++ b/src/window.rs	2026-10-31 12:48:03.652768522 +0100
+@@ -4896,6 +4896,75 @@
+         Ok(())
+     }
+ 
++    /// Paints copies of one glyph, each at its own origin and colour and
++    /// rotated by its own angle around that origin (the glyph's baseline
++    /// start, as for [`Self::paint_glyph`]).
++    ///
++    /// The glyph is rasterised once, in grayscale and without subpixel
++    /// positioning, then placed per instance. This suits text that follows
++    /// a path, such as labels along a road, and outline halos drawn as
++    /// offset copies under the glyph, where per-copy rasterisation would
++    /// dominate the cost.
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    pub fn paint_glyph_instances(
++        &mut self,
++        font_id: FontId,
++        glyph_id: GlyphId,
++        font_size: Pixels,
++        instances: impl IntoIterator<Item = GlyphInstance>,
++    ) -> Result<()> {
++        self.invalidator.debug_assert_paint();
++
++        let element_opacity = self.element_opacity();
++        let scale_factor = self.scale_factor();
++        let params = RenderGlyphParams {
++            font_id,
++            glyph_id,
++            font_size,
++            subpixel_variant: Point::default(),
++            scale_factor,
++            is_emoji: false,
++            subpixel_rendering: false,
++            dilation: 0,
++        };
++        let raster_bounds = self.text_system().raster_bounds(&params)?;
++        if raster_bounds.is_zero() {
++            return Ok(());
++        }
++        let tile = self
++            .sprite_atlas
++            .get_or_insert_with(params.clone().into(), &mut || {
++                let (size, bytes) = self.text_system().rasterize_glyph(&params)?;
++                Ok(Some((size, Cow::Owned(bytes))))
++            })?
++            .expect("Callback above only errors or returns Some");
++        let content_mask = self.snapped_content_mask();
++        let size = tile.bounds.size.map(Into::into);
++        let raster_origin = raster_bounds.origin.map(|c| ScaledPixels(c.0 as f32));
++
++        for instance in instances {
++            let origin = instance.origin.scale(scale_factor);
++            let (sin, cos) = instance.rotation.0.sin_cos();
++            // Rotate about `origin`: p' = R (p - origin) + origin.
++            let rotation_scale = [[cos, -sin], [sin, cos]];
++            let translation = [
++                origin.x.0 - (cos * origin.x.0 - sin * origin.y.0),
++                origin.y.0 - (sin * origin.x.0 + cos * origin.y.0),
++            ];
++            self.next_frame.scene.insert_primitive(MonochromeSprite {
++                order: 0,
++                pad: 0,
++                bounds: Bounds { origin: origin + raster_origin, size },
++                content_mask: content_mask.clone(),
++                color: instance.color.opacity(element_opacity),
++                tile,
++                transformation: TransformationMatrix { rotation_scale, translation },
++            });
++        }
++        Ok(())
++    }
++
+     fn should_use_subpixel_rendering(&self, font_id: FontId, font_size: Pixels) -> bool {
+         if self.platform_window.background_appearance() != WindowBackgroundAppearance::Opaque {
+             return false;
+@@ -9776,3 +9845,14 @@
+         .expect("closed inspector has no bookkeeping and no style overrides");
+     }
+ }
++
++/// One copy of a glyph for [`Window::paint_glyph_instances`].
++#[derive(Debug, Clone, Copy)]
++pub struct GlyphInstance {
++    /// Where the glyph's baseline starts, in logical pixels.
++    pub origin: Point<Pixels>,
++    /// The colour to paint this copy in.
++    pub color: Hsla,
++    /// Clockwise rotation about `origin` (screen y points down).
++    pub rotation: crate::Radians,
++}

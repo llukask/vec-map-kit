@@ -1,0 +1,113 @@
+{
+	"version": 8,
+	"name": "My Style",
+	"glyphs": "https://example.com/fonts/{fontstack}/{range}.pbf",
+	"sources": {
+		"protomaps": {
+			"type": "vector",
+			"url": "pmtiles://https://example.com/tiles.pmtiles",
+			"attribution": "© OpenStreetMap"
+		}
+	},
+	"layers": [
+		{
+			"id": "background",
+			"type": "background",
+			"paint": {
+				"background-color": "#f0eee6"
+			}
+		},
+		{
+			"id": "water",
+			"type": "fill",
+			"source": "protomaps",
+			"source-layer": "water",
+			"paint": {
+				"fill-color": "#a0c8f0"
+			}
+		},
+		{
+			"id": "highways",
+			"type": "line",
+			"source": "protomaps",
+			"source-layer": "roads",
+			"filter": [
+				"==",
+				[
+					"get",
+					"kind"
+				],
+				"highway"
+			],
+			"paint": {
+				"line-color": "#dd0",
+				"line-width": [
+					"interpolate",
+					[
+						"linear"
+					],
+					[
+						"zoom"
+					],
+					3,
+					0.5,
+					10,
+					1,
+					16,
+					6
+				]
+			}
+		},
+		{
+			"id": "major-roads",
+			"type": "line",
+			"source": "protomaps",
+			"source-layer": "roads",
+			"filter": [
+				"==",
+				[
+					"get",
+					"kind"
+				],
+				"major_road"
+			],
+			"paint": {
+				"line-color": "#ddd",
+				"line-width": [
+					"interpolate",
+					[
+						"linear"
+					],
+					[
+						"zoom"
+					],
+					3,
+					0.5,
+					10,
+					1,
+					16,
+					6
+				]
+			}
+		},
+		{
+			"id": "place-labels",
+			"type": "symbol",
+			"source": "protomaps",
+			"source-layer": "places",
+			"layout": {
+				"text-field": [
+					"get",
+					"name"
+				],
+				"text-font": [
+					"Noto Sans Regular"
+				],
+				"text-size": 12
+			},
+			"paint": {
+				"text-color": "#333"
+			}
+		}
+	]
+}

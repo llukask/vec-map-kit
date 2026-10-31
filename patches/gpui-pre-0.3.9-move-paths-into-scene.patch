@@ -1,0 +1,117 @@
+diff -ruN a/src/scene.rs gpui-pre/src/scene.rs
+--- a/src/scene.rs	2006-07-24 03:21:28.000000000 +0200
++++ b/src/scene.rs	2026-10-31 12:30:03.196272773 +0100
+@@ -45,6 +45,9 @@
+     pub shadows: Vec<Shadow>,
+     pub quads: Vec<Quad>,
+     pub paths: Vec<Path<ScaledPixels>>,
++    /// `paths` index of each `PathId`, filled in by `finish` after sorting,
++    /// so `replay` can find a path without the scene holding a second copy.
++    path_slots: Vec<usize>,
+     pub underlines: Vec<Underline>,
+     pub monochrome_sprites: Vec<MonochromeSprite>,
+     pub subpixel_sprites: Vec<SubpixelSprite>,
+@@ -59,6 +62,7 @@
+         self.primitive_bounds.clear();
+         self.layer_stack.clear();
+         self.paths.clear();
++        self.path_slots.clear();
+         self.shadows.clear();
+         self.quads.clear();
+         self.underlines.clear();
+@@ -99,6 +103,16 @@
+             .last()
+             .copied()
+             .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
++        // Paths own large vertex buffers; move them into `paths` and log only
++        // their id instead of cloning them into `paint_operations`.
++        if let Primitive::Path(mut path) = primitive {
++            path.order = order;
++            let id = PathId(self.paths.len());
++            path.id = id;
++            self.paths.push(path);
++            self.paint_operations.push(PaintOperation::Path(id));
++            return;
++        }
+         match &mut primitive {
+             Primitive::Shadow(shadow) => {
+                 shadow.order = order;
+@@ -108,11 +122,7 @@
+                 quad.order = order;
+                 self.quads.push(*quad);
+             }
+-            Primitive::Path(path) => {
+-                path.order = order;
+-                path.id = PathId(self.paths.len());
+-                self.paths.push(path.clone());
+-            }
++            Primitive::Path(_) => unreachable!("paths are inserted above"),
+             Primitive::Underline(underline) => {
+                 underline.order = order;
+                 self.underlines.push(*underline);
+@@ -142,6 +152,10 @@
+         for operation in &prev_scene.paint_operations[range] {
+             match operation {
+                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
++                PaintOperation::Path(id) => {
++                    let slot = prev_scene.path_slots.get(id.0).copied().unwrap_or(id.0);
++                    self.insert_primitive(Primitive::Path(prev_scene.paths[slot].clone()));
++                }
+                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
+                 PaintOperation::EndLayer => self.pop_layer(),
+             }
+@@ -152,6 +166,11 @@
+         self.shadows.sort_by_key(|shadow| shadow.order);
+         self.quads.sort_by_key(|quad| quad.order);
+         self.paths.sort_by_key(|path| path.order);
++        self.path_slots.clear();
++        self.path_slots.resize(self.paths.len(), 0);
++        for (slot, path) in self.paths.iter().enumerate() {
++            self.path_slots[path.id.0] = slot;
++        }
+         self.underlines.sort_by_key(|underline| underline.order);
+         self.monochrome_sprites
+             .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+@@ -213,6 +232,7 @@
+ 
+ pub(crate) enum PaintOperation {
+     Primitive(Primitive),
++    Path(PathId),
+     StartLayer(Bounds<ScaledPixels>),
+     EndLayer,
+ }
+@@ -817,6 +837,22 @@
+         }
+     }
+ 
++    /// Like `scale`, but reuses the vertex buffer: `PathVertex<Pixels>` and
++    /// `PathVertex<ScaledPixels>` share a layout, so the collect is in place.
++    pub(crate) fn into_scaled(self, factor: f32) -> Path<ScaledPixels> {
++        Path {
++            id: self.id,
++            order: self.order,
++            bounds: self.bounds.scale(factor),
++            content_mask: self.content_mask.scale(factor),
++            vertices: self.vertices.into_iter().map(|vertex| vertex.scale(factor)).collect(),
++            start: self.start.map(|start| start.scale(factor)),
++            current: self.current.scale(factor),
++            contour_count: self.contour_count,
++            color: self.color,
++        }
++    }
++
+     /// Scale this path by the given factor.
+     pub fn scale(&self, factor: f32) -> Path<ScaledPixels> {
+         Path {
+diff -ruN a/src/window.rs gpui-pre/src/window.rs
+--- a/src/window.rs	2006-07-24 03:21:28.000000000 +0200
++++ b/src/window.rs	2026-10-31 12:28:34.689158576 +0100
+@@ -4763,7 +4763,7 @@
+         path.color = color.opacity(opacity);
+         self.next_frame
+             .scene
+-            .insert_primitive(path.scale(scale_factor));
++            .insert_primitive(path.into_scaled(scale_factor));
+     }
+ 
+     /// Paint an underline into the scene for the next frame at the current z-index.

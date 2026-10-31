@@ -1,0 +1,232 @@
+diff -ruN a/src/shaders_storage.wgsl gpui-pre-wgpu/src/shaders_storage.wgsl
+--- a/src/shaders_storage.wgsl	2006-07-24 03:21:28.000000000 +0200
++++ b/src/shaders_storage.wgsl	2026-10-31 12:31:58.619353584 +0100
+@@ -8,6 +8,7 @@
+ @group(1) @binding(0) var<storage, read> b_quads: array<Quad>;
+ @group(1) @binding(0) var<storage, read> b_shadows: array<Shadow>;
+ @group(1) @binding(0) var<storage, read> b_path_vertices: array<PathRasterizationVertex>;
++@group(1) @binding(1) var<storage, read> b_path_infos: array<PathRasterizationInfo>;
+ @group(1) @binding(0) var<storage, read> b_path_sprites: array<PathSprite>;
+ @group(1) @binding(0) var<storage, read> b_underlines: array<Underline>;
+ @group(1) @binding(0) var<storage, read> b_mono_sprites: array<MonochromeSprite>;
+@@ -25,6 +26,10 @@
+     return b_path_vertices[vertex_id];
+ }
+ 
++fn load_path_info(path_index: u32) -> PathRasterizationInfo {
++    return b_path_infos[path_index];
++}
++
+ fn load_path_sprite(instance_id: u32) -> PathSprite {
+     return b_path_sprites[instance_id];
+ }
+diff -ruN a/src/shaders.wgsl gpui-pre-wgpu/src/shaders.wgsl
+--- a/src/shaders.wgsl	2006-07-24 03:21:28.000000000 +0200
++++ b/src/shaders.wgsl	2026-10-31 12:31:58.619288744 +0100
+@@ -1050,6 +1050,10 @@
+ struct PathRasterizationVertex {
+     xy_position: vec2<f32>,
+     st_position: vec2<f32>,
++    path_index: u32,
++}
++
++struct PathRasterizationInfo {
+     color: Background,
+     bounds: Bounds,
+ }
+@@ -1072,7 +1076,7 @@
+     out.position = to_device_position_impl(v.xy_position);
+     out.st_position = v.st_position;
+     out.vertex_id = vertex_id;
+-    out.clip_distances = distance_from_clip_rect_impl(v.xy_position, v.bounds);
++    out.clip_distances = distance_from_clip_rect_impl(v.xy_position, load_path_info(v.path_index).bounds);
+     return out;
+ }
+ 
+@@ -1084,9 +1088,9 @@
+         return vec4<f32>(0.0);
+     }
+ 
+-    let v = load_path_vertex(input.vertex_id);
+-    let background = v.color;
+-    let bounds = v.bounds;
++    let info = load_path_info(load_path_vertex(input.vertex_id).path_index);
++    let background = info.color;
++    let bounds = info.bounds;
+ 
+     var alpha: f32;
+     if (length(vec2<f32>(dx.x, dy.x)) < 0.001) {
+diff -ruN a/src/wgpu_renderer.rs gpui-pre-wgpu/src/wgpu_renderer.rs
+--- a/src/wgpu_renderer.rs	2006-07-24 03:21:28.000000000 +0200
++++ b/src/wgpu_renderer.rs	2026-10-31 12:31:58.619165034 +0100
+@@ -102,11 +102,24 @@
+     bounds: Bounds<ScaledPixels>,
+ }
+ 
++/// One vertex of a rasterized path. Colour and clip bounds are per path,
++/// so they live in `PathRasterizationInfo` and each vertex only carries its
++/// path's index: 24 bytes instead of ~100, which matters for scenes with
++/// hundreds of thousands of path triangles (e.g. vector maps).
+ #[derive(Clone, Debug)]
+ #[repr(C)]
+ struct PathRasterizationVertex {
+     xy_position: Point<ScaledPixels>,
+     st_position: Point<f32>,
++    /// Index into the batch's `PathRasterizationInfo` array.
++    path_index: u32,
++    _pad: u32,
++}
++
++/// Per-path data shared by all of a path's vertices.
++#[derive(Clone, Debug)]
++#[repr(C)]
++struct PathRasterizationInfo {
+     color: Background,
+     bounds: Bounds<ScaledPixels>,
+ }
+@@ -159,6 +172,8 @@
+ struct WgpuBindGroupLayouts {
+     globals: wgpu::BindGroupLayout,
+     instances: wgpu::BindGroupLayout,
++    /// Path vertices at binding 0, per-path info at binding 1.
++    path_instances: wgpu::BindGroupLayout,
+     texture: wgpu::BindGroupLayout,
+     surfaces: wgpu::BindGroupLayout,
+ }
+@@ -539,7 +554,17 @@
+ 
+         let instances = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+             label: Some("instances_layout"),
+-            entries: &[instance_data_entry],
++            entries: &[instance_data_entry.clone()],
++        });
++        // TODO: the WebGL texture transport has no second record type yet;
++        // `shaders_webgl.wgsl` needs a `load_path_info` before this layout
++        // can be used there.
++        let path_instances = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++            label: Some("path_instances_layout"),
++            entries: &[
++                instance_data_entry.clone(),
++                wgpu::BindGroupLayoutEntry { binding: 1, ..instance_data_entry },
++            ],
+         });
+ 
+         let texture = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+@@ -611,6 +636,7 @@
+         WgpuBindGroupLayouts {
+             globals,
+             instances,
++            path_instances,
+             texture,
+             surfaces,
+         }
+@@ -802,7 +828,7 @@
+             "vs_path_rasterization",
+             "fs_path_rasterization",
+             &layouts.globals,
+-            &layouts.instances,
++            &layouts.path_instances,
+             None,
+             wgpu::PrimitiveTopology::TriangleList,
+             &[Some(wgpu::ColorTargetState {
+@@ -1839,14 +1865,19 @@
+         paths: &[Path<ScaledPixels>],
+         instance_offset: &mut u64,
+     ) -> Result<bool> {
+-        let mut vertices = Vec::new();
+-        for path in paths {
+-            let bounds = path.clipped_bounds();
++        let mut vertices = Vec::with_capacity(paths.iter().map(|p| p.vertices.len()).sum());
++        let mut infos = Vec::with_capacity(paths.len());
++        for (path_index, path) in paths.iter().enumerate() {
++            infos.push(PathRasterizationInfo {
++                color: path.color,
++                bounds: path.clipped_bounds(),
++            });
++            let path_index = path_index as u32;
+             vertices.extend(path.vertices.iter().map(|v| PathRasterizationVertex {
+                 xy_position: v.xy_position,
+                 st_position: v.st_position,
+-                color: path.color,
+-                bounds,
++                path_index,
++                _pad: 0,
+             }));
+         }
+ 
+@@ -1854,11 +1885,7 @@
+             return Ok(false);
+         }
+ 
+-        let vertex_binding = self.write_instance_binding(
+-            "path_rasterization_bind_group",
+-            instance_offset,
+-            &vertices,
+-        )?;
++        let vertex_binding = self.write_path_binding(instance_offset, &vertices, &infos)?;
+ 
+         let resources = self.resources();
+         let Some(path_intermediate_view) = resources.path_intermediate_view.as_ref() else {
+@@ -1903,6 +1930,62 @@
+         Ok(true)
+     }
+ 
++    /// Writes a path batch's vertex and per-path arrays into the shared
++    /// instance buffer and binds them together for the rasterization pass.
++    fn write_path_binding(
++        &mut self,
++        instance_offset: &mut u64,
++        vertices: &[PathRasterizationVertex],
++        infos: &[PathRasterizationInfo],
++    ) -> Result<InstanceBinding> {
++        let vertex_data = unsafe { Self::instance_bytes(vertices) };
++        let info_data = unsafe { Self::instance_bytes(infos) };
++        let align = self.instance_data_alignment.max(1);
++        // wgpu rejects zero-sized bindings.
++        let vertex_size = (vertex_data.len() as u64).max(16);
++        let info_size = (info_data.len() as u64).max(16);
++        // Reserve both allocations at once so a grow can't split them
++        // across two buffers.
++        let needed = vertex_size.next_multiple_of(align) + info_size + align;
++        let mut offset = (*instance_offset).next_multiple_of(align);
++        if offset + needed > self.instance_data_capacity {
++            self.grow_instance_data(needed)?;
++            offset = 0;
++        }
++        let vertex_offset = offset;
++        let info_offset = (vertex_offset + vertex_size).next_multiple_of(align);
++        *instance_offset = info_offset + info_size;
++
++        let resources = self.resources();
++        let InstanceData::Storage(buffer) = &resources.instance_data else {
++            anyhow::bail!("path rasterization needs storage-buffer instance data");
++        };
++        resources.queue.write_buffer(buffer, vertex_offset, vertex_data);
++        resources.queue.write_buffer(buffer, info_offset, info_data);
++        let entry = |binding, offset, size| wgpu::BindGroupEntry {
++            binding,
++            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
++                buffer,
++                offset,
++                size: NonZeroU64::new(size),
++            }),
++        };
++        let bind_group = resources
++            .device
++            .create_bind_group(&wgpu::BindGroupDescriptor {
++                label: Some("path_rasterization_bind_group"),
++                layout: &resources.bind_group_layouts.path_instances,
++                entries: &[
++                    entry(0, vertex_offset, vertex_size),
++                    entry(1, info_offset, info_size),
++                ],
++            });
++        Ok(InstanceBinding {
++            bind_group,
++            first_instance: 0,
++        })
++    }
++
+     fn write_instance_binding<T>(
+         &mut self,
+         label: &str,
