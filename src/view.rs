@@ -28,6 +28,7 @@ use gpui_kit::*;
 use crate::style::{EvalContext, LayerKind, Style, Visibility};
 use crate::mvt::{Feature, Geometry};
 
+use crate::attribution::Attribution;
 use crate::camera::Camera;
 use crate::mesh::{self, BatchColor, LayerMesh, LineWidth, MESH_EXTENT, MeshDetail, TileMesh};
 use crate::source::TileJsonSource;
@@ -60,6 +61,8 @@ pub struct MapView {
     drag_from: Option<Point<Pixels>>,
     stats: Rc<Cell<FrameStats>>,
     labels: text::Labels,
+    /// The source's credit line, shown in the bottom-right corner.
+    attribution: Attribution,
 }
 
 /// What the last painted frame cost, for overlays and benchmarks.
@@ -115,6 +118,7 @@ enum TileState {
 
 impl MapView {
     pub fn new(source: Arc<TileJsonSource>, style: Arc<Style>, camera: Camera) -> Self {
+        let attribution = source.attribution().map(Attribution::parse).unwrap_or_default();
         Self {
             camera,
             style,
@@ -126,6 +130,7 @@ impl MapView {
             drag_from: None,
             stats: Rc::default(),
             labels: text::Labels::default(),
+            attribution,
         }
     }
 
@@ -422,6 +427,7 @@ impl Render for MapView {
         let view = cx.entity();
         let stats = self.stats.clone();
         div()
+            .relative()
             .size_full()
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
@@ -454,6 +460,44 @@ impl Render for MapView {
                 )
                 .size_full(),
             )
+            .children(self.attribution_overlay())
+    }
+}
+
+impl MapView {
+    /// The source's attribution in a translucent box in the bottom-right
+    /// corner, as MapLibre shows it; links open in the browser. Tile
+    /// providers' terms usually require it to stay visible.
+    fn attribution_overlay(&self) -> Option<impl IntoElement + use<>> {
+        let Attribution { text, links } = &self.attribution;
+        if text.is_empty() {
+            return None;
+        }
+        let underline = HighlightStyle {
+            underline: Some(UnderlineStyle { thickness: px(1.0), color: None, wavy: false }),
+            ..Default::default()
+        };
+        let text = StyledText::new(text.clone()).with_highlights(links.iter().map(|(range, _)| (range.clone(), underline)));
+        let ranges = links.iter().map(|(range, _)| range.clone()).collect();
+        let urls: Vec<String> = links.iter().map(|(_, url)| url.clone()).collect();
+        Some(
+            div()
+                .absolute()
+                .bottom_0()
+                .right_0()
+                .max_w_full()
+                .px_1p5()
+                .py_0p5()
+                .rounded_tl_md()
+                .bg(rgba(0xffffffb3))
+                .text_color(rgba(0x000000bf))
+                .text_xs()
+                // Presses on the credit line don't start a map drag; scrolling
+                // over it still zooms.
+                .id("attribution")
+                .block_mouse_except_scroll()
+                .child(InteractiveText::new("attribution", text).on_click(ranges, move |index, _, cx| cx.open_url(&urls[index]))),
+        )
     }
 }
 

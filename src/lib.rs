@@ -6,6 +6,7 @@
 // the camera, per-tile mesh building, and the `MapView` entity that draws
 // with GPUI paths so the map stays sharp at every fractional zoom.
 
+mod attribution;
 pub mod camera;
 pub mod label;
 pub mod mesh;

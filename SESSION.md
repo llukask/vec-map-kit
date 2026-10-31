@@ -17,6 +17,13 @@
 - Headless sway caps frame callbacks at ~30 fps on its 60 Hz output, even
   for a trivial scene, so fps numbers from the bench are not meaningful;
   main-thread CPU per frame is.
+- Headless sway has no pointer device, so `seat cursor press` and one-shot
+  `wlrctl` clicks never reach GPUI. Pointer tests go through wayvnc, which
+  keeps a virtual pointer for as long as a VNC client is connected (see
+  `script/check-attribution.sh`).
+- GPUI's `InteractiveText` registers its mouse-up handler on the frame after
+  the press, so a synthetic press and release sent back to back never
+  count as a click.
 - `WindowOptions` window bounds are ignored by the user's tiling
   compositor, so probe window sizes there were not what was requested.
 
@@ -40,8 +47,9 @@
   `line-offset`, `fill-outline-color`, `fill-translate`, or
   `fill-extrusion` yet. Road casings in maptiler styles are missing
   because of `line-gap-width`.
-- `MapView` draws no attribution; MapTiler and OpenStreetMap require one,
-  so for now every embedding application has to show it.
+- The attribution overlay is always shown and can't be restyled or moved;
+  there is no compact mode for narrow views (MapLibre collapses it to an
+  info button).
 - `style::Color::parse` documents that named CSS colours are unsupported;
   styles using `"white"` etc. would fall back to black.
 - `text-font` in the core is a constant `Vec<String>`, not an expression;

@@ -21,6 +21,8 @@ What it draws:
   and rivers, with halos, collision detection and fades.
 - Loading tiles are covered by their parent or children, so zooming out
   doesn't flash empty areas.
+- The source's attribution (TileJSON `attribution`) in the bottom-right
+  corner, with its links clickable, as most tile providers require.
 
 ## Requirements: patched GPUI
 
@@ -92,8 +94,6 @@ schema (OpenMapTiles for the MapTiler URLs above).
 - Some text properties: `text-letter-spacing`, `text-justify`,
   `text-variable-anchor`, `text-rotate`, `text-halo-blur`.
 - More than one source per map, raster tiles, and PMTiles archives.
-- An attribution control. Most tile providers require one; show it in
-  your application.
 
 ## Development
 
@@ -114,8 +114,9 @@ cargo run --release --example map -- \
 `cargo test` runs the unit tests and the MapLibre expression test suite
 (`tests/maplibre_style_spec.rs`). `script/bench-vienna.sh` and
 `script/bench-zoomout.sh` measure frame cost and zoom-out flicker over
-central Vienna in a headless Sway session; they read `MAPTILER_KEY` from
-the environment or from `.env`.
+central Vienna in a headless Sway session, and
+`script/check-attribution.sh` clicks the attribution links there; they
+read `MAPTILER_KEY` from the environment or from `.env`.
 
 ## License
 

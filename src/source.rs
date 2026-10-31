@@ -62,6 +62,11 @@ impl TileJsonSource {
         Camera::new(WorldPoint::from_lon_lat(lon, lat), zoom)
     }
 
+    /// The document's `attribution`, an HTML fragment crediting the data.
+    pub fn attribution(&self) -> Option<&str> {
+        self.tilejson.attribution.as_deref()
+    }
+
     /// Inclusive range of zoom levels the source has tiles for.
     pub fn zoom_range(&self) -> (u8, u8) {
         (self.tilejson.minzoom, self.tilejson.maxzoom)
@@ -227,7 +232,8 @@ mod tests {
         let base = serve(move |base| {
             let doc = format!(
                 r#"{{"tilejson": "3.0.0", "tiles": ["{base}/tiles/{{z}}/{{x}}/{{y}}.pbf?key=k"],
-                    "minzoom": 2, "maxzoom": 14, "center": [9.52, 47.14, 12]}}"#
+                    "minzoom": 2, "maxzoom": 14, "center": [9.52, 47.14, 12],
+                    "attribution": "<a href=\"https://example.com\">&copy; Example</a>"}}"#
             );
             let mut routes = vec![("/tiles.json".to_string(), 200, doc.into_bytes())];
             routes.extend(tiles);
@@ -244,6 +250,12 @@ mod tests {
         assert_eq!(camera.zoom, 12.0);
         let (lon, lat) = camera.center.to_lon_lat();
         assert!((lon - 9.52).abs() < 1e-9 && (lat - 47.14).abs() < 1e-9);
+    }
+
+    #[test]
+    fn attribution_is_the_documents_html() {
+        let source = source_with_tiles(vec![]);
+        assert_eq!(source.attribution(), Some(r#"<a href="https://example.com">&copy; Example</a>"#));
     }
 
     #[test]
