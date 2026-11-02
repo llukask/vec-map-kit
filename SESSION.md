@@ -14,6 +14,9 @@
   needs a throwaway build script (see its header).
 - `perf record` fails inside the agent sandbox (no perf events), so gpui's
   internal frame cost is measured as main-thread CPU time instead.
+- Label pixels in screenshots differ by ~0.1% between sessions for the
+  same build (glyph rasterisation; geometry is identical). Compare label
+  rendering only between shots from the same session.
 - Headless sway caps frame callbacks at ~30 fps on its 60 Hz output, even
   for a trivial scene, so fps numbers from the bench are not meaningful;
   main-thread CPU per frame is.
@@ -84,6 +87,9 @@
 - Labels in the neighbouring tile's MVT buffer are dropped to avoid
   duplicates, but a label straddling a tile edge can still be clipped by
   the collision pass of the tile that owns it.
+- Style errors inside a layer or source point at the layer or source, not
+  the offending property: their contents decode through an intermediate
+  `serde_json::Value`, where the path tracking stops.
 - `style`: `symbol-placement` keeps zoom functions; the other enum layout
   properties (`text-anchor`, `text-transform`,
   `line-cap`, ...) still drop zoom functions the same way it used to.

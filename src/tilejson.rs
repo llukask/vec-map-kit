@@ -74,6 +74,10 @@ pub struct TileJson {
     #[serde(default)]
     pub attribution: Option<String>,
 
+    /// Which way tile rows are numbered. Absent or `null` means `xyz`.
+    #[serde(default)]
+    pub scheme: Option<Scheme>,
+
     /// `"pbf"` for MVT. We accept other values but the render layer
     /// will refuse to ingest them.
     #[serde(default)]
@@ -97,6 +101,17 @@ pub struct TileJson {
 
 fn default_maxzoom() -> u8 {
     30
+}
+
+/// TileJSON's tile row numbering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scheme {
+    /// Row 0 is the northernmost, as in `TileId`.
+    #[default]
+    Xyz,
+    /// Row 0 is the southernmost (OSGeo Tile Map Service).
+    Tms,
 }
 
 /// Errors raised while parsing TileJSON or substituting URL
@@ -178,10 +193,15 @@ impl TileJson {
         Ok(tj)
     }
 
-    /// Resolve `tiles[0]` with the given coordinates substituted.
-    /// Substitutes `{z}` / `{x}` / `{y}` only — other placeholders
-    /// (`{ratio}`, `{quadkey}`, …) are deferred until we need them.
+    /// Resolve `tiles[0]` for the XYZ tile `z/x/y`, converting the row
+    /// for a `tms` source. Substitutes `{z}` / `{x}` / `{y}` only — other
+    /// placeholders (`{ratio}`, `{quadkey}`, …) are deferred until we
+    /// need them.
     pub fn tile_url(&self, z: u8, x: u32, y: u32) -> String {
+        let y = match self.scheme.unwrap_or_default() {
+            Scheme::Xyz => y,
+            Scheme::Tms => (1u32 << z) - 1 - y,
+        };
         fill_template(&self.tiles[0], z, x, y)
     }
 }
@@ -281,5 +301,25 @@ mod tests {
             url,
             "https://api.maptiler.com/tiles/v4/7/65/42.pbf?key=ABC"
         );
+    }
+
+    fn with_scheme(scheme: &str) -> TileJson {
+        TileJson::from_json_str(&format!(r#"{{"tiles": ["https://example.com/{{z}}/{{x}}/{{y}}.pbf"], "scheme": {scheme}}}"#))
+            .expect("parses")
+    }
+
+    #[test]
+    fn tms_scheme_counts_rows_from_the_south() {
+        // At z3 there are 8 rows; XYZ row 1 is TMS row 8 - 1 - 1 = 6.
+        assert_eq!(with_scheme(r#""tms""#).tile_url(3, 4, 1), "https://example.com/3/4/6.pbf");
+        assert_eq!(with_scheme(r#""xyz""#).tile_url(3, 4, 1), "https://example.com/3/4/1.pbf");
+        // OpenFreeMap sends an explicit null.
+        assert_eq!(with_scheme("null").tile_url(3, 4, 1), "https://example.com/3/4/1.pbf");
+    }
+
+    #[test]
+    fn unknown_scheme_is_an_error() {
+        let doc = r#"{"tiles": ["https://example.com/{z}/{x}/{y}.pbf"], "scheme": "quadkey"}"#;
+        assert!(TileJson::from_json_str(doc).is_err());
     }
 }

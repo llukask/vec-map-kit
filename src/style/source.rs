@@ -1,31 +1,19 @@
-// A style document's `sources` map identifies where tile data lives.
-// The MapLibre spec defines several source kinds (`vector`, `raster`,
-// `geojson`, ...); we model:
+// A style document's `sources` map names where each layer's data lives.
+// The MapLibre spec defines several source kinds; this models `vector`,
+// `raster` and `geojson` with their common properties, and parses every
+// other kind (`raster-dem`, `image`, `video`) as `Source::Other`.
 //
-//   * `vector` — vector-tile source. Accepts the spec's `url` form
-//     (pointing at a `pmtiles://` archive or a TileJSON document) and
-//     the inline `tiles` array, plus the optional `minzoom` /
-//     `maxzoom` / `bounds` / `center` / `attribution` fields. The
-//     renderer consumes these via [`render::TileSource::from_style_source`].
-//
-//   * `raster` — recognised but rendered as a no-op. Common in real
-//     stylesheets where a vendor uses it only to carry an
-//     `attribution` string; refusing the variant would force callers
-//     to hand-trim their style documents.
-//
-//   * `geojson` — inline GeoJSON object or a URL pointing at one. The
-//     renderer synthesizes a virtual MVT layer (named after the source)
-//     per requested tile by projecting the features into the tile's
-//     MVT space; style layers reference the data via `source: <name>`
-//     without a `source-layer`.
-//
-// Anything else (`raster-dem`, `image`, `video`, …) still fails to
-// parse so we notice when a style document needs broader support.
+// `MapView` doesn't read these yet: every layer draws from the one
+// `TileJsonSource` it was given. They are parsed so that styles load, and
+// so a later multi-source renderer has them.
 
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
+// Properties the spec defines but this enum doesn't model (`scheme`,
+// `promoteId`, `volatile`, ...) are ignored rather than rejected, so any
+// style MapLibre accepts parses.
+#[serde(tag = "type")]
 pub enum Source {
     /// `type: "vector"` — vector-tile source.
     ///
@@ -77,7 +65,7 @@ pub enum Source {
         minzoom: Option<u8>,
         #[serde(default)]
         maxzoom: Option<u8>,
-        #[serde(default)]
+        #[serde(default, rename = "tileSize")]
         tile_size: Option<u32>,
         #[serde(default)]
         bounds: Option<[f64; 4]>,
@@ -103,6 +91,11 @@ pub enum Source {
         #[serde(default)]
         bounds: Option<[f64; 4]>,
     },
+
+    /// Any other source type (`raster-dem`, `image`, `video`). Its
+    /// properties are dropped; layers drawing from it are not rendered.
+    #[serde(other)]
+    Other,
 }
 
 #[cfg(test)]
@@ -199,6 +192,46 @@ mod tests {
     }
 
     #[test]
+    fn raster_tile_size_is_camel_case() {
+        // OpenFreeMap's styles carry this Natural Earth relief source.
+        let src: Source = serde_json::from_str(
+            r#"{
+                "type": "raster",
+                "maxzoom": 6,
+                "tileSize": 256,
+                "tiles": ["https://tiles.openfreemap.org/natural_earth/ne2sr/{z}/{x}/{y}.png"]
+            }"#,
+        )
+        .unwrap();
+        assert!(matches!(src, Source::Raster { tile_size: Some(256), maxzoom: Some(6), .. }));
+    }
+
+    #[test]
+    fn spec_properties_not_modelled_are_ignored() {
+        let src: Source = serde_json::from_str(
+            r#"{
+                "type": "vector",
+                "url": "https://example.com/tiles.json",
+                "scheme": "xyz",
+                "promoteId": "osm_id",
+                "volatile": false,
+                "encoding": "mvt"
+            }"#,
+        )
+        .unwrap();
+        assert!(matches!(src, Source::Vector { url: Some(_), .. }));
+    }
+
+    #[test]
+    fn other_source_types_parse_as_other() {
+        let src: Source = serde_json::from_str(
+            r#"{"type": "raster-dem", "url": "https://example.com/terrain.json", "encoding": "terrarium"}"#,
+        )
+        .unwrap();
+        assert_eq!(src, Source::Other);
+    }
+
+    #[test]
     fn parses_inline_geojson_source() {
         let src: Source = serde_json::from_str(
             r#"{
@@ -227,21 +260,5 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(src, Source::GeoJson { .. }));
-    }
-
-    #[test]
-    fn rejects_unknown_source_type() {
-        let err = serde_json::from_str::<Source>(r#"{"type": "image", "url": "..."}"#)
-            .unwrap_err();
-        assert!(err.to_string().contains("image"));
-    }
-
-    #[test]
-    fn rejects_unknown_field_on_vector() {
-        // Spec extensions outside the modeled set (e.g. `scheme`)
-        // still error rather than be silently dropped.
-        let err =
-            serde_json::from_str::<Source>(r#"{"type": "vector", "scheme": "tms"}"#).unwrap_err();
-        assert!(err.to_string().contains("scheme"));
     }
 }

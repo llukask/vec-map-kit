@@ -605,7 +605,7 @@ fn resolve_layer_paints(style: &Style, zoom: f64) -> Vec<Option<LayerPaint>> {
                     color: mesh::resolve_color(&line.paint.line_color, &line.paint.line_opacity, &ctx, &feature),
                     width: mesh::resolve_width(&line.paint.line_width, &ctx, &feature),
                 },
-                LayerKind::Background(_) | LayerKind::Symbol(_) => return None,
+                LayerKind::Background(_) | LayerKind::Symbol(_) | LayerKind::Other { .. } => return None,
             };
             Some(paint)
         })

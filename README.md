@@ -90,7 +90,10 @@ schema (OpenMapTiles for the MapTiler URLs above).
 
 - Icons and sprites (`icon-image`), `fill-pattern`.
 - `line-dasharray`, `line-gap-width` (so road casings are missing),
-  `line-offset`, `fill-outline-color`, `fill-translate`, `fill-extrusion`.
+  `line-offset`, `fill-outline-color`, `fill-translate`.
+- Layer types other than `background`, `fill`, `line` and `symbol`
+  (`raster`, `circle`, `fill-extrusion`, `hillshade`, `heatmap`). Styles
+  using them load; those layers are skipped.
 - Some text properties: `text-letter-spacing`, `text-justify`,
   `text-variable-anchor`, `text-rotate`, `text-halo-blur`.
 - More than one source per map, raster tiles, and PMTiles archives.

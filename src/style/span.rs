@@ -491,6 +491,15 @@ pub fn byte_offset_from_line_col(src: &str, line: usize, column: usize) -> usize
     (offset + col_offset).min(bytes.len())
 }
 
+/// The inverse of [`byte_offset_from_line_col`]: the 1-based line and
+/// byte column of `offset` in `src`.
+pub fn line_col_from_byte_offset(src: &str, offset: usize) -> (usize, usize) {
+    let before = &src.as_bytes()[..offset.min(src.len())];
+    let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
+    let line_start = before.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    (line, offset.min(src.len()) - line_start + 1)
+}
+
 // ==============================================================================
 // Tests
 // ==============================================================================

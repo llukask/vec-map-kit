@@ -95,6 +95,17 @@ impl FromStyleValue for f32 {
     }
 }
 
+impl FromStyleValue for bool {
+    fn from_style_value(v: Value) -> Result<Self, PropertyError> {
+        match v {
+            Value::Bool(b) => Ok(b),
+            other => Err(PropertyError::TypeMismatch(format!(
+                "expected a boolean, got {other:?}"
+            ))),
+        }
+    }
+}
+
 impl FromStyleValue for SymbolPlacement {
     fn from_style_value(v: Value) -> Result<Self, PropertyError> {
         match v {
@@ -686,21 +697,14 @@ mod prop_de {
         Ok(Some([dx, dy]))
     }
 
-    /// `text-keep-upright` (and any future boolean layout knobs).
-    /// Accepts a bare boolean literal; drops the expression form per
-    /// the policy used by `text-anchor` / `line-cap` — the renderer
-    /// reads the resolved value once per layer at shape time and has
-    /// nowhere to land a per-feature data-driven boolean without a
-    /// per-glyph re-bind.
-    pub fn opt_bool<'de, D: Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
-        let raw = Option::<serde_json::Value>::deserialize(d)?;
-        let Some(raw) = raw else { return Ok(None) };
-        if super::is_expression_shape(&raw) {
-            return Ok(None);
-        }
-        raw.as_bool()
-            .map(Some)
-            .ok_or_else(|| serde::de::Error::custom("expected a boolean literal"))
+    /// Boolean properties (`text-keep-upright`, `text-allow-overlap`,
+    /// `fill-antialias`, ...): a literal, or an expression. The spec only
+    /// lets these depend on zoom, so the renderer resolves them once per
+    /// layer per frame.
+    pub fn opt_bool<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Property<bool>>, D::Error> {
+        Option::<serde_json::Value>::deserialize(d)?
+            .map(|v| super::property_from_json::<bool>(v).map_err(serde::de::Error::custom))
+            .transpose()
     }
 }
 
@@ -817,8 +821,8 @@ pub struct FillPaint {
     /// enabling MSAA on the surface or adding shader-side edge AA —
     /// both add render-state cost across every fill draw. Defer
     /// until a polish phase justifies the lift.
-    #[serde(rename = "fill-antialias", default)]
-    pub fill_antialias: Option<bool>,
+    #[serde(rename = "fill-antialias", default, deserialize_with = "prop_de::opt_bool")]
+    pub fill_antialias: Option<Property<bool>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -1428,13 +1432,12 @@ pub struct SymbolLayout {
     /// render the label upside-down (text running right-to-left in
     /// the screen frame), reverse the glyph order and flip each
     /// glyph by π so it reads left-to-right. Spec default is `true`.
-    /// Expression form dropped per the accept-literal policy.
     #[serde(
         rename = "text-keep-upright",
         default,
         deserialize_with = "prop_de::opt_bool"
     )]
-    pub text_keep_upright: Option<bool>,
+    pub text_keep_upright: Option<Property<bool>>,
     /// `text-writing-mode` — *parse-only* (vertical CJK is Phase
     /// 13+). Decodes the literal enum so styles that set it load
     /// without an `IgnoredLayerKeys` warning; the renderer ignores
@@ -1457,10 +1460,8 @@ pub struct SymbolLayout {
     // reads them once per layer at draw time, not per feature. Data-
     // driven shapes (where the spec allows them) decode through the
     // `Property<T>` machinery so styles that author them with
-    // `["case", …]` / `["match", …]` still load. The `bool` knobs
-    // accept the literal form only, following the precedent set by
-    // `text-anchor` / `text-keep-upright` (data-driven booleans have
-    // nowhere to land without per-feature collision state).
+    // `["case", …]` / `["match", …]` still load. The `bool` knobs are
+    // zoom-dependent at most, per the spec, and resolve once per layer.
 
     /// `symbol-sort-key` — placement priority. Higher values are
     /// placed first; ties fall back to layer render order. Default
@@ -1477,14 +1478,12 @@ pub struct SymbolLayout {
     /// is a coarse approximation of upstream's "don't double-place
     /// labels straddling adjacent tile seams"; same intent, cheaper
     /// to compute, and good enough for v1. Default `false`.
-    /// Expression form silently dropped per the boolean-literal
-    /// policy.
     #[serde(
         rename = "symbol-avoid-edges",
         default,
         deserialize_with = "prop_de::opt_bool"
     )]
-    pub symbol_avoid_edges: Option<bool>,
+    pub symbol_avoid_edges: Option<Property<bool>>,
     /// `text-allow-overlap` — when true, the text candidate skips
     /// the overlap test entirely (and is therefore always placed).
     /// Default `false`.
@@ -1493,7 +1492,7 @@ pub struct SymbolLayout {
         default,
         deserialize_with = "prop_de::opt_bool"
     )]
-    pub text_allow_overlap: Option<bool>,
+    pub text_allow_overlap: Option<Property<bool>>,
     /// `text-ignore-placement` — when true, the placed text does
     /// **not** push its AABB onto the accepted list, so other
     /// candidates can land on top of it. The "watermark / shield
@@ -1503,7 +1502,7 @@ pub struct SymbolLayout {
         default,
         deserialize_with = "prop_de::opt_bool"
     )]
-    pub text_ignore_placement: Option<bool>,
+    pub text_ignore_placement: Option<Property<bool>>,
     /// `text-optional` — by default a text/icon pair must both fit;
     /// marking the text optional lets it drop alone while the icon
     /// persists. Default `false`.
@@ -1512,7 +1511,7 @@ pub struct SymbolLayout {
         default,
         deserialize_with = "prop_de::opt_bool"
     )]
-    pub text_optional: Option<bool>,
+    pub text_optional: Option<Property<bool>>,
     /// `icon-allow-overlap` — twin of `text-allow-overlap` for the
     /// icon half. Default `false`.
     #[serde(
@@ -1520,7 +1519,7 @@ pub struct SymbolLayout {
         default,
         deserialize_with = "prop_de::opt_bool"
     )]
-    pub icon_allow_overlap: Option<bool>,
+    pub icon_allow_overlap: Option<Property<bool>>,
     /// `icon-ignore-placement` — twin of `text-ignore-placement` for
     /// the icon half. Default `false`.
     #[serde(
@@ -1528,7 +1527,7 @@ pub struct SymbolLayout {
         default,
         deserialize_with = "prop_de::opt_bool"
     )]
-    pub icon_ignore_placement: Option<bool>,
+    pub icon_ignore_placement: Option<Property<bool>>,
     /// `icon-optional` — twin of `text-optional` for the icon half.
     /// Default `false`.
     #[serde(
@@ -1536,7 +1535,7 @@ pub struct SymbolLayout {
         default,
         deserialize_with = "prop_de::opt_bool"
     )]
-    pub icon_optional: Option<bool>,
+    pub icon_optional: Option<Property<bool>>,
 }
 
 // ==============================================================================
@@ -1575,6 +1574,10 @@ pub enum LayerKind {
     Fill(FillLayer),
     Line(LineLayer),
     Symbol(SymbolLayer),
+    /// A spec layer type this crate doesn't draw (`raster`, `circle`,
+    /// `fill-extrusion`, `hillshade`, `heatmap`, ...). Kept so the layer
+    /// list stays complete; its paint and layout aren't parsed.
+    Other { kind: String },
 }
 
 // ==============================================================================
@@ -1707,11 +1710,7 @@ impl<'de> Deserialize<'de> for Layer {
                 let layout = decode_optional::<SymbolLayout, D::Error>(raw.layout)?;
                 LayerKind::Symbol(SymbolLayer { paint, layout })
             }
-            other => {
-                return Err(de::Error::custom(format!(
-                    "unsupported layer type {other:?}"
-                )));
-            }
+            other => LayerKind::Other { kind: other.to_string() },
         };
 
         // Filters in real-world style documents are often written in
@@ -2199,9 +2198,16 @@ mod tests {
     // ---- error surfaces ----
 
     #[test]
-    fn rejects_unknown_layer_type() {
-        let err = parse(json!({ "id": "x", "type": "raster" })).unwrap_err();
-        assert!(err.to_string().contains("unsupported layer type"));
+    fn other_layer_types_are_kept_as_other() {
+        // OpenFreeMap's "liberty" style shades relief with a raster layer.
+        let layer = parse(json!({
+            "id": "ne2_shaded", "type": "raster", "source": "ne2_shaded",
+            "maxzoom": 6, "paint": { "raster-opacity": ["interpolate", ["exponential", 1.5], ["zoom"], 0, 0.6, 6, 0.1] }
+        }))
+        .expect("raster layers are valid style layers");
+        assert_eq!(layer.id, "ne2_shaded");
+        assert_eq!(layer.maxzoom, Some(6.0));
+        assert_eq!(layer.kind, LayerKind::Other { kind: "raster".into() });
     }
 
     #[test]
@@ -3164,7 +3170,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_text_keep_upright_literal_and_drops_expression() {
+    fn parses_text_keep_upright_literal_and_expression() {
         let lit = parse(json!({
             "id": "labels", "type": "symbol",
             "source-layer": "roads",
@@ -3177,24 +3183,21 @@ mod tests {
         let LayerKind::Symbol(sym) = &lit.kind else {
             panic!("expected symbol");
         };
-        assert_eq!(sym.layout.text_keep_upright, Some(false));
+        assert_eq!(sym.layout.text_keep_upright, Some(Property::Constant(false)));
 
-        // Expression form silently dropped (data-driven keep-upright
-        // would require a per-feature flip pass; same trade-off as
-        // text-anchor).
-        let dropped = parse(json!({
+        let zoomed = parse(json!({
             "id": "labels", "type": "symbol",
             "source-layer": "roads",
             "layout": {
                 "symbol-placement": "line",
-                "text-keep-upright": ["get", "two_way"]
+                "text-keep-upright": ["step", ["zoom"], true, 14, false]
             }
         }))
         .unwrap();
-        let LayerKind::Symbol(sym) = &dropped.kind else {
+        let LayerKind::Symbol(sym) = &zoomed.kind else {
             panic!("expected symbol");
         };
-        assert_eq!(sym.layout.text_keep_upright, None);
+        assert!(matches!(sym.layout.text_keep_upright, Some(Property::Expression(_))));
     }
 
     #[test]
@@ -3251,6 +3254,27 @@ mod tests {
     // only one with full expression support).
 
     #[test]
+    fn fill_antialias_accepts_a_zoom_expression() {
+        // OpenFreeMap's "bright" style turns anti-aliasing on from z9.
+        let layer = parse(json!({
+            "id": "landcover", "type": "fill",
+            "source-layer": "landcover",
+            "paint": { "fill-antialias": ["step", ["zoom"], false, 9, true] }
+        }))
+        .expect("a zoom expression is valid for fill-antialias");
+        let LayerKind::Fill(fill) = &layer.kind else { panic!("expected fill") };
+        assert!(matches!(fill.paint.fill_antialias, Some(Property::Expression(_))));
+
+        let literal = parse(json!({
+            "id": "water", "type": "fill", "source-layer": "water",
+            "paint": { "fill-antialias": false }
+        }))
+        .unwrap();
+        let LayerKind::Fill(fill) = &literal.kind else { panic!("expected fill") };
+        assert_eq!(fill.paint.fill_antialias, Some(Property::Constant(false)));
+    }
+
+    #[test]
     fn parses_symbol_sort_key_literal_and_expression() {
         let lit = parse(json!({
             "id": "labels", "type": "symbol",
@@ -3300,30 +3324,27 @@ mod tests {
         let LayerKind::Symbol(sym) = &layer.kind else {
             panic!("expected symbol");
         };
-        assert_eq!(sym.layout.symbol_avoid_edges, Some(true));
-        assert_eq!(sym.layout.text_allow_overlap, Some(true));
-        assert_eq!(sym.layout.text_ignore_placement, Some(false));
-        assert_eq!(sym.layout.text_optional, Some(true));
-        assert_eq!(sym.layout.icon_allow_overlap, Some(false));
-        assert_eq!(sym.layout.icon_ignore_placement, Some(true));
-        assert_eq!(sym.layout.icon_optional, Some(true));
+        assert_eq!(sym.layout.symbol_avoid_edges, Some(Property::Constant(true)));
+        assert_eq!(sym.layout.text_allow_overlap, Some(Property::Constant(true)));
+        assert_eq!(sym.layout.text_ignore_placement, Some(Property::Constant(false)));
+        assert_eq!(sym.layout.text_optional, Some(Property::Constant(true)));
+        assert_eq!(sym.layout.icon_allow_overlap, Some(Property::Constant(false)));
+        assert_eq!(sym.layout.icon_ignore_placement, Some(Property::Constant(true)));
+        assert_eq!(sym.layout.icon_optional, Some(Property::Constant(true)));
     }
 
     #[test]
-    fn collision_bool_flags_drop_expression_form() {
-        // Spot-check: data-driven booleans follow the
-        // `text-keep-upright` precedent (silently drop). One field
-        // is enough to lock the policy.
-        let dropped = parse(json!({
+    fn collision_bool_flags_keep_expression_form() {
+        let zoomed = parse(json!({
             "id": "labels", "type": "symbol",
             "source-layer": "pois",
-            "layout": { "text-allow-overlap": ["get", "important"] }
+            "layout": { "text-allow-overlap": ["step", ["zoom"], false, 16, true] }
         }))
         .unwrap();
-        let LayerKind::Symbol(sym) = &dropped.kind else {
+        let LayerKind::Symbol(sym) = &zoomed.kind else {
             panic!("expected symbol");
         };
-        assert_eq!(sym.layout.text_allow_overlap, None);
+        assert!(matches!(sym.layout.text_allow_overlap, Some(Property::Expression(_))));
     }
 
     // ==============================================================================
@@ -3486,6 +3507,6 @@ mod tests {
         };
         // The renderer never reads this field today; the test just
         // pins the parser surface so styles that set it load cleanly.
-        assert_eq!(f.paint.fill_antialias, Some(false));
+        assert_eq!(f.paint.fill_antialias, Some(Property::Constant(false)));
     }
 }

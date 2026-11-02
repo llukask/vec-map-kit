@@ -270,6 +270,7 @@ pub fn build_tile_mesh(tile: &crate::mvt::Tile, id: TileId, style: &Style, detai
                 }
                 // Backgrounds are a single quad.
                 LayerKind::Background(_) => None,
+                LayerKind::Other { .. } => None,
             }
         })
         .collect();
@@ -291,6 +292,9 @@ fn builds_at(layer: &Layer, z: u8, overzoomed: bool) -> bool {
         // TODO: icons (`icon-image`) need the sprite atlas; text only for now.
         LayerKind::Symbol(symbol) => symbol.layout.text_field.is_some(),
         LayerKind::Background(_) => false,
+        // TODO: `circle`, `raster`, `fill-extrusion`, `hillshade` and
+        // `heatmap` layers.
+        LayerKind::Other { .. } => false,
     };
     drawable
         && layer.visibility == Visibility::Visible

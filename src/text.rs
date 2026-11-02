@@ -96,6 +96,9 @@ fn resolve_layer_text(layer: &crate::style::Layer, zoom: f64, in_range_only: boo
     let number = |p: &Option<crate::style::Property<f32>>, default: f32| {
         p.as_ref().and_then(|p| p.resolve(&ctx, &feature).ok()).unwrap_or(default)
     };
+    let flag = |p: &Option<crate::style::Property<bool>>, default: bool| {
+        p.as_ref().and_then(|p| p.resolve(&ctx, &feature).ok()).unwrap_or(default)
+    };
     let halo = paint.text_halo_color.as_ref().and_then(|p| p.resolve(&ctx, &feature).ok());
     Some(LayerText {
         font_stack: layout
@@ -117,9 +120,9 @@ fn resolve_layer_text(layer: &crate::style::Layer, zoom: f64, in_range_only: boo
         line_height: number(&layout.text_line_height, 1.2),
         padding: layout.text_padding.as_ref().and_then(|p| p.first().copied()).unwrap_or(2.0),
         max_angle: number(&layout.text_max_angle, 45.0).to_radians(),
-        keep_upright: layout.text_keep_upright.unwrap_or(true),
-        allow_overlap: layout.text_allow_overlap.unwrap_or(false),
-        ignore_placement: layout.text_ignore_placement.unwrap_or(false),
+        keep_upright: flag(&layout.text_keep_upright, true),
+        allow_overlap: flag(&layout.text_allow_overlap, false),
+        ignore_placement: flag(&layout.text_ignore_placement, false),
     })
     // TODO: `text-letter-spacing`, `text-justify`, `text-variable-anchor`,
     // `text-rotate` and `text-halo-blur` are not applied yet.
@@ -650,5 +653,22 @@ mod tests {
         assert_eq!(parse_font_name("Roboto Italic"), ("Roboto".into(), FontWeight::NORMAL, FontStyle::Italic));
         // A family whose name merely ends in a weight word keeps it.
         assert_eq!(parse_font_name("Black"), ("Black".into(), FontWeight::NORMAL, FontStyle::Normal));
+    }
+
+    #[test]
+    fn boolean_layout_properties_follow_zoom() {
+        let layer: crate::style::Layer = serde_json::from_value(serde_json::json!({
+            "id": "pois", "type": "symbol", "source-layer": "poi",
+            "layout": {
+                "text-field": "{name}",
+                "text-allow-overlap": ["step", ["zoom"], false, 14, true],
+                "text-keep-upright": ["step", ["zoom"], true, 14, false]
+            }
+        }))
+        .expect("layer parses");
+        let below = resolve_layer_text(&layer, 13.0, true).expect("layer is visible");
+        let above = resolve_layer_text(&layer, 15.0, true).expect("layer is visible");
+        assert!(!below.allow_overlap && below.keep_upright);
+        assert!(above.allow_overlap && !above.keep_upright);
     }
 }

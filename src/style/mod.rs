@@ -126,19 +126,10 @@ impl Style {
         // verbatim document (after serde-typed parsing we've already
         // discarded the unrecognised bits). The typed parse then
         // happens through serde as normal.
-        let mut raw: serde_json::Value = serde_json::from_str(s)
+        let raw: serde_json::Value = serde_json::from_str(s)
             .map_err(|e| StyleError::from_serde_json(e, s))?;
         let mut warnings = Vec::new();
         collect_warnings(&raw, &mut warnings);
-
-        // Drop `fill-extrusion` layers before the typed parse: the
-        // renderer has no 3D geometry pipeline, and rejecting the whole
-        // document over a layer we couldn't draw anyway makes real-world
-        // styles unusable. `collect_warnings` has already surfaced the
-        // `UnsupportedLayerType` notice; stripping now keeps any
-        // unrecognised paint/layout keys on the layer out of the typed
-        // deserialize path and out of the expression pre-pass.
-        strip_unsupported_layers(&mut raw);
 
         // Run the path-aware expression pre-pass before serde takes
         // over. If any expression in the document is malformed, we
@@ -149,15 +140,12 @@ impl Style {
             return Err(StyleError::expression(expr_err, &map, s));
         }
 
+        // Serde failures after the expression pre-pass are structural
+        // (bad colour literal, wrong type, unknown enum variant, …).
+        // Deserializing from a `Value` loses source positions, so the
+        // failing JSON path is tracked instead and mapped back to a span.
         let style: Style =
-            serde_json::from_value(raw.clone()).map_err(|e| {
-                // Serde failures after the expression pre-pass are
-                // structural (unsupported layer type, bad color
-                // literal, unknown enum variant, …). They land here
-                // with no JsonPath, but `serde_json::Error::line/column`
-                // does give us a byte position into the source.
-                StyleError::from_serde_json(e, s)
-            })?;
+            serde_path_to_error::deserialize(raw.clone()).map_err(|e| StyleError::invalid(e, &raw, s))?;
         let style = Self::validate(style, &raw, s)?;
         Ok((style, warnings))
     }
@@ -672,37 +660,12 @@ fn collect_warnings(v: &serde_json::Value, out: &mut Vec<StyleWarning>) {
     }
 }
 
-/// Layer kinds the parser recognises as legal MapLibre spec values but
-/// silently drops because the renderer can't draw them. Keeping the list
-/// here (rather than scattered match arms) makes it easy to extend if
-/// the renderer ever gains 3D / raster pipelines.
-const UNSUPPORTED_LAYER_TYPES: &[&str] = &["fill-extrusion"];
+/// Layer kinds that are legal MapLibre spec values but that `MapView`
+/// can't draw. They parse as `LayerKind::Other` and get one warning each.
+const UNSUPPORTED_LAYER_TYPES: &[&str] = &["raster", "circle", "fill-extrusion", "hillshade", "heatmap", "color-relief"];
 
 fn is_unsupported_layer_type(t: &str) -> bool {
     UNSUPPORTED_LAYER_TYPES.contains(&t)
-}
-
-/// Strip layers whose `type` is in [`UNSUPPORTED_LAYER_TYPES`] from the
-/// raw style JSON. Called between `collect_warnings` (which records the
-/// dropped layers as `StyleWarning::UnsupportedLayerType`) and the typed
-/// serde parse, so downstream code sees a document the renderer can
-/// actually handle.
-fn strip_unsupported_layers(raw: &mut serde_json::Value) {
-    let Some(layers) = raw
-        .as_object_mut()
-        .and_then(|o| o.get_mut("layers"))
-        .and_then(|v| v.as_array_mut())
-    else {
-        return;
-    };
-    layers.retain(|layer| {
-        let kind = layer
-            .as_object()
-            .and_then(|o| o.get("type"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        !is_unsupported_layer_type(kind)
-    });
 }
 
 fn collect_layer_warnings(layer: &serde_json::Value, out: &mut Vec<StyleWarning>) {
@@ -718,10 +681,10 @@ fn collect_layer_warnings(layer: &serde_json::Value, out: &mut Vec<StyleWarning>
         .unwrap_or("")
         .to_string();
 
-    // For layer kinds we intentionally drop (e.g. `fill-extrusion`),
-    // surface a single warning naming the layer and stop — walking the
+    // For layer kinds that aren't drawn (e.g. `fill-extrusion`), surface
+    // a single warning naming the layer and stop — walking the
     // paint/layout blocks would emit "ignored key" warnings for every
-    // property on a layer we already chose to discard wholesale.
+    // property on a layer that isn't drawn anyway.
     if is_unsupported_layer_type(&layer_type) {
         out.push(StyleWarning::UnsupportedLayerType {
             layer_id,
@@ -813,10 +776,9 @@ fn collect_layer_warnings(layer: &serde_json::Value, out: &mut Vec<StyleWarning>
 
 #[derive(Debug, thiserror::Error)]
 pub enum StyleError {
-    /// Top-level JSON syntax error or post-pre-pass structural error
-    /// from serde (unknown layer type, bad color literal, …). Carries
-    /// the 1-based `line`/`column` `serde_json::Error` reported plus a
-    /// derived byte span pointing at that position in the source.
+    /// JSON syntax error. Carries the 1-based `line`/`column`
+    /// `serde_json::Error` reported plus a derived byte span pointing at
+    /// that position in the source.
     #[error("{message} (at line {line}, column {column})")]
     Json {
         line: usize,
@@ -835,6 +797,19 @@ pub enum StyleError {
         #[source]
         source: ExprError,
     },
+    /// A value of the wrong shape (bad literal, wrong type), located at
+    /// the deepest object the parser reached: for anything inside a layer
+    /// or source, the layer or source itself. `context` names the layer
+    /// by id when there is one.
+    #[error("{message} at {path}{context} (line {line}, column {column})")]
+    Invalid {
+        path: JsonPath,
+        context: String,
+        line: usize,
+        column: usize,
+        message: String,
+        span: ByteSpan,
+    },
     #[error("style document is not valid UTF-8: {0}")]
     Utf8(std::str::Utf8Error),
     #[error("unsupported style version: {value} (only 8 is supported)")]
@@ -849,6 +824,7 @@ impl StyleError {
         match self {
             StyleError::Json { span, .. } => Some(*span),
             StyleError::Expression { span, .. } => Some(*span),
+            StyleError::Invalid { span, .. } => Some(*span),
             StyleError::UnsupportedVersion { span, .. } => Some(*span),
             StyleError::Utf8(_) => None,
         }
@@ -877,6 +853,35 @@ impl StyleError {
             message: err.to_string(),
             span: ByteSpan::new(offset, end),
         }
+    }
+
+    /// Locate a typed-parse failure. The path ends at the deepest object
+    /// serde reached directly: layers and sources decode their contents
+    /// from an intermediate `Value`, so inside them it stops at the layer
+    /// or source.
+    pub(crate) fn invalid(
+        err: serde_path_to_error::Error<serde_json::Error>,
+        raw: &serde_json::Value,
+        src: &str,
+    ) -> Self {
+        let mut path = JsonPath::root();
+        for segment in err.path().iter() {
+            match segment {
+                serde_path_to_error::Segment::Seq { index } => path.push_index(*index),
+                serde_path_to_error::Segment::Map { key } => path.push_key(key.clone()),
+                serde_path_to_error::Segment::Enum { .. } | serde_path_to_error::Segment::Unknown => {}
+            }
+        }
+        let span = span::build_span_map(src, raw).lookup_or_ancestor(&path).unwrap_or(ByteSpan::empty());
+        let (line, column) = span::line_col_from_byte_offset(src, span.start);
+        let context = match path.segments() {
+            [PathSegment::Key(layers), PathSegment::Index(index), ..] if layers == "layers" => raw["layers"][*index]["id"]
+                .as_str()
+                .map(|id| format!(" (layer {id:?})"))
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        StyleError::Invalid { path, context, line, column, message: err.into_inner().to_string(), span }
     }
 
     pub(crate) fn expression(err: ExprError, map: &SpanMap, _src: &str) -> Self {
@@ -1073,6 +1078,47 @@ mod tests {
         let offset = span::byte_offset_from_line_col(bad, line, column);
         assert_eq!(bad.as_bytes()[offset], b'?');
         assert!(span.start <= offset && offset < span.end);
+    }
+
+    #[test]
+    fn structural_error_names_the_layer_and_its_line() {
+        // The 3D layer before the broken one must not shift the index.
+        let bad = r#"{
+  "version": 8,
+  "sources": {},
+  "layers": [
+    {"id": "land", "type": "fill", "source-layer": "landcover"},
+    {"id": "buildings-3d", "type": "fill-extrusion", "source-layer": "building"},
+    {"id": "water", "type": "fill", "source-layer": "water",
+     "paint": {"fill-antialias": "yes"}}
+  ]
+}"#;
+        let err = Style::from_json_str(bad).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains(".layers[2]") && message.contains(r#"layer "water""#), "{message}");
+        let StyleError::Invalid { line, span, .. } = &err else {
+            panic!("expected Invalid, got {err:?}");
+        };
+        assert_eq!(*line, 7, "{message}");
+        assert!(bad[span.start..span.end].starts_with(r#"{"id": "water""#));
+    }
+
+    #[test]
+    fn structural_error_in_a_source_names_the_source() {
+        let bad = r#"{
+  "version": 8,
+  "sources": {
+    "relief": {"type": "raster", "tileSize": "big"}
+  },
+  "layers": []
+}"#;
+        let err = Style::from_json_str(bad).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains(".sources.relief"), "{message}");
+        let StyleError::Invalid { line, .. } = &err else {
+            panic!("expected Invalid, got {err:?}");
+        };
+        assert_eq!(*line, 4, "{message}");
     }
 
     #[test]
@@ -1342,14 +1388,14 @@ mod tests {
     }
 
     #[test]
-    fn drops_fill_extrusion_layers_with_warning() {
+    fn keeps_fill_extrusion_layers_as_other_with_warning() {
         // `fill-extrusion` is a spec-valid layer kind we can't render
-        // (no 3D pipeline). The parser should drop the layer instead of
-        // failing the whole document, surface a single
-        // `UnsupportedLayerType` warning naming it, and leave the
-        // surrounding layers intact. We also pack the dropped layer
-        // with unmodeled paint keys to confirm we don't double-warn
-        // about properties on a layer we already discarded.
+        // (no 3D pipeline). The parser keeps it as `LayerKind::Other`
+        // instead of failing the whole document, surfaces a single
+        // `UnsupportedLayerType` warning naming it, and leaves the
+        // surrounding layers intact. We also pack the layer with
+        // unmodeled paint keys to confirm we don't double-warn about
+        // properties on a layer that isn't drawn.
         let raw = r##"{
             "version": 8,
             "sources": {"x": {"type": "vector", "tiles": ["http://e/{z}/{x}/{y}"]}},
@@ -1367,10 +1413,10 @@ mod tests {
         }"##;
         let (style, warnings) = Style::parse_with_warnings(raw).unwrap();
 
-        // The 3D layer is gone; its neighbours survive in original order.
-        assert_eq!(style.layers.len(), 2);
-        assert_eq!(style.layers[0].id, "bg");
-        assert_eq!(style.layers[1].id, "roads");
+        // The 3D layer stays in place, so layer indices match the document.
+        let ids: Vec<_> = style.layers.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids, ["bg", "buildings3d", "roads"]);
+        assert_eq!(style.layers[1].kind, LayerKind::Other { kind: "fill-extrusion".into() });
 
         // Exactly one warning about the dropped layer, and no
         // `IgnoredLayerKeys` noise about its paint properties.
