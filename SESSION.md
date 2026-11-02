@@ -65,6 +65,17 @@
 - The style's own `sources` are ignored; every layer draws from the one
   `TileJsonSource` passed to `MapView`. A style URL alone is not enough to
   open a map yet.
+- TileJSON features still ignored:
+  - Only `tiles[0]` is used; the other templates (for spreading load across
+    hosts) are not.
+  - Only `{z}`, `{x}`, `{y}` are substituted; MapLibre's `{s}`, `{quadkey}`,
+    `{ratio}`, `{prefix}` and `{bbox-epsg-3857}` stay in the URL as is.
+  - `center`'s zoom isn't clamped to `minzoom`..`maxzoom`, and the camera
+    can pan outside `bounds`.
+  - `vector_layers` (including per-layer `minzoom`/`maxzoom`), `fillzoom`,
+    `tilejson`, `compression` (gzip is sniffed per response), `name`,
+    `description`, `version`, `legend`, `template`, `grids` and `data` are
+    parsed or kept in `extra` but unused.
 - `script/bench-vienna.sh` spends ~100 MapTiler tile requests per run
   against `MAPTILER_KEY` (from `.env`). It fetches MapTiler's current
   online style, so results can shift when MapTiler edits that style.

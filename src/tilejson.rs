@@ -6,18 +6,18 @@
 // fields — `crs`, `crs_wkt`, `extent`, `mvt_buffer`, `generator`, …
 // — that aren't in the spec but should not cause us to error. We
 // model the fields we actively read and ignore the rest via
-// `serde(flatten)` into a `_other` map.
+// `serde(flatten)` into `extra`.
 //
-// Only the subset of TileJSON the `render` module needs is exposed
-// here: enough to drive an MVT `{z}/{x}/{y}` URL fetcher and to feed
-// `parse_layer_specs` with a `vector_layers` blob shaped the way the
-// PMTiles metadata reader expects.
+// Parsing also rejects what the map can't draw: an empty `tiles` list
+// or a `format` other than vector tiles. Fields that are parsed but not
+// yet used are listed in SESSION.md.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::camera::WorldPoint;
 use crate::style::span::{self, ByteSpan, JsonPath};
 
 /// One vector-layer descriptor as it appears in TileJSON's
@@ -63,7 +63,8 @@ pub struct TileJson {
     #[serde(default = "default_maxzoom")]
     pub maxzoom: u8,
 
-    /// `[west, south, east, north]` in WGS-84 degrees.
+    /// `[west, south, east, north]` in WGS-84 degrees. Tiles outside it
+    /// are never requested, see [`TileJson::covers_tile`].
     #[serde(default)]
     pub bounds: Option<[f64; 4]>,
 
@@ -78,8 +79,8 @@ pub struct TileJson {
     #[serde(default)]
     pub scheme: Option<Scheme>,
 
-    /// `"pbf"` for MVT. We accept other values but the render layer
-    /// will refuse to ingest them.
+    /// `"pbf"` or `"mvt"` for Mapbox Vector Tiles. Parsing rejects any
+    /// other value; absent means MVT.
     #[serde(default)]
     pub format: Option<String>,
 
@@ -133,6 +134,11 @@ pub enum TileJsonError {
     /// the snippet renderer can highlight the empty `[]`.
     #[error("TileJSON document has an empty `tiles` array")]
     NoTiles { span: ByteSpan },
+
+    /// `format` names something other than Mapbox Vector Tiles. Carries
+    /// the span of the format string.
+    #[error("unsupported tile format {format:?}, only vector tiles (\"pbf\" or \"mvt\") can be drawn")]
+    UnsupportedFormat { format: String, span: ByteSpan },
 }
 
 impl TileJsonError {
@@ -141,6 +147,7 @@ impl TileJsonError {
         match self {
             TileJsonError::Json { span, .. } => Some(*span),
             TileJsonError::NoTiles { span } => Some(*span),
+            TileJsonError::UnsupportedFormat { span, .. } => Some(*span),
         }
     }
 
@@ -190,6 +197,14 @@ impl TileJson {
                 .unwrap_or(ByteSpan::empty());
             return Err(TileJsonError::NoTiles { span });
         }
+        // Only vector tiles can be drawn. An absent `format` is taken to be
+        // MVT, as MapLibre does for a vector source.
+        if let Some(format) = tj.format.as_deref().filter(|f| !matches!(*f, "pbf" | "mvt")) {
+            let span = map
+                .lookup(&JsonPath::root().child_key("format"))
+                .unwrap_or(ByteSpan::empty());
+            return Err(TileJsonError::UnsupportedFormat { format: format.to_string(), span });
+        }
         Ok(tj)
     }
 
@@ -203,6 +218,27 @@ impl TileJson {
             Scheme::Tms => (1u32 << z) - 1 - y,
         };
         fill_template(&self.tiles[0], z, x, y)
+    }
+
+    /// Whether the XYZ tile `z/x/y` overlaps `bounds`, so the server can
+    /// have data for it. Tiles that only touch the edge don't count. A
+    /// `west` greater than `east` is a box across the antimeridian.
+    pub fn covers_tile(&self, z: u8, x: u32, y: u32) -> bool {
+        let Some([west, south, east, north]) = self.bounds else {
+            return true;
+        };
+        let n = (1u32 << z) as f64;
+        let (tile_west, tile_east) = (x as f64 / n, (x + 1) as f64 / n);
+        let (tile_north, tile_south) = (y as f64 / n, (y + 1) as f64 / n);
+        let north_west = WorldPoint::from_lon_lat(west, north);
+        let south_east = WorldPoint::from_lon_lat(east, south);
+        let overlaps_x = |from: f64, to: f64| tile_east > from && tile_west < to;
+        let overlaps_lon = if west <= east {
+            overlaps_x(north_west.x, south_east.x)
+        } else {
+            overlaps_x(north_west.x, 1.0) || overlaps_x(0.0, south_east.x)
+        };
+        overlaps_lon && tile_south > north_west.y && tile_north < south_east.y
     }
 }
 
@@ -321,5 +357,51 @@ mod tests {
     fn unknown_scheme_is_an_error() {
         let doc = r#"{"tiles": ["https://example.com/{z}/{x}/{y}.pbf"], "scheme": "quadkey"}"#;
         assert!(TileJson::from_json_str(doc).is_err());
+    }
+
+    fn with_field(field: &str, value: &str) -> Result<TileJson, TileJsonError> {
+        TileJson::from_json_str(&format!(r#"{{"tiles": ["https://example.com/{{z}}/{{x}}/{{y}}.pbf"], "{field}": {value}}}"#))
+    }
+
+    #[test]
+    fn vector_formats_are_accepted() {
+        for format in [r#""pbf""#, r#""mvt""#, "null"] {
+            assert!(with_field("format", format).is_ok(), "format {format}");
+        }
+    }
+
+    #[test]
+    fn raster_format_is_an_error_at_load() {
+        let doc = r#"{"tiles": ["https://example.com/{z}/{x}/{y}.png"], "format": "png"}"#;
+        let err = TileJson::from_json_str(doc).expect_err("png tiles cannot be drawn");
+        let TileJsonError::UnsupportedFormat { format, span } = err else {
+            panic!("expected UnsupportedFormat, got {err:?}");
+        };
+        assert_eq!(format, "png");
+        assert_eq!(&doc[span.start..span.end], r#""png""#);
+    }
+
+    #[test]
+    fn bounds_limit_the_tiles_covered() {
+        let tj = with_field("bounds", "[10, 10, 20, 20]").expect("parses");
+        assert!(tj.covers_tile(0, 0, 0));
+        assert!(tj.covers_tile(1, 1, 0), "north-east quarter");
+        assert!(!tj.covers_tile(1, 0, 0), "north-west quarter");
+        assert!(!tj.covers_tile(1, 1, 1), "south-east quarter");
+    }
+
+    #[test]
+    fn bounds_across_the_antimeridian_wrap() {
+        // West of east: the box spans lon 170 → 180 → -170.
+        let tj = with_field("bounds", "[170, -10, -170, 10]").expect("parses");
+        assert!(tj.covers_tile(3, 0, 3), "lon -180..-135");
+        assert!(tj.covers_tile(3, 7, 4), "lon 135..180");
+        assert!(!tj.covers_tile(3, 4, 3), "lon 0..45");
+    }
+
+    #[test]
+    fn no_bounds_covers_the_world() {
+        let tj = with_field("name", r#""world""#).expect("parses");
+        assert!(tj.covers_tile(3, 0, 0) && tj.covers_tile(3, 7, 7));
     }
 }

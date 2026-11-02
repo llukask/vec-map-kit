@@ -73,11 +73,15 @@ impl TileJsonSource {
     }
 
     /// Decompressed MVT bytes, or `None` where the server has no tile.
+    /// Tiles outside the document's `bounds` are `None` without a request.
     /// The download runs on a fetch thread; the future only waits for it.
     //
     // TODO: TileJSON allows several `tiles` templates for load
     // balancing; only the first is used.
     pub fn tile(&self, id: TileId) -> TileFuture {
+        if !self.tilejson.covers_tile(id.z, id.x, id.y) {
+            return Box::pin(futures::future::ready(Ok(None)));
+        }
         self.fetcher.get(self.tilejson.tile_url(id.z, id.x, id.y))
     }
 }
@@ -275,6 +279,25 @@ mod tests {
         let source = source_with_tiles(vec![("/tiles/3/4/6.pbf?key=k", 204, Vec::new())]);
         assert!(block_on(source.tile(TileId::new(3, 4, 5))).expect("404 is not an error").is_none());
         assert!(block_on(source.tile(TileId::new(3, 4, 6))).expect("204 is not an error").is_none());
+    }
+
+    #[test]
+    fn tiles_outside_bounds_are_not_requested() {
+        let base = serve(|base| {
+            let doc = format!(
+                r#"{{"tiles": ["{base}/tiles/{{z}}/{{x}}/{{y}}.pbf"], "bounds": [10, 10, 20, 20]}}"#
+            );
+            vec![
+                ("/tiles.json".to_string(), 200, doc.into_bytes()),
+                ("/tiles/1/1/0.pbf".to_string(), 200, b"inside".to_vec()),
+                ("/tiles/1/0/0.pbf".to_string(), 200, b"outside".to_vec()),
+            ]
+        });
+        let source = TileJsonSource::fetch(&format!("{base}/tiles.json")).expect("TileJSON loads");
+        let inside = block_on(source.tile(TileId::new(1, 1, 0))).expect("tile loads");
+        let outside = block_on(source.tile(TileId::new(1, 0, 0))).expect("skipping is not an error");
+        assert_eq!(inside.as_deref(), Some(&b"inside"[..]));
+        assert_eq!(outside, None);
     }
 
     #[test]
